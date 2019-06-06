@@ -5,13 +5,20 @@
 
 class AESYS9929B : public Adafruit_GFX {
 	private: 
-		uint8_t
+		const uint8_t
 			PIN_DH,
 			PIN_CH,
 			PIN_DL,
 			PIN_CL,
-			PIN_OE,
-			PIN_LAT;
+			PIN_LAT,
+			PIN_OE;
+#ifdef ESP8266
+		const uint16_t
+			PINB_DH,
+			PINB_CH,
+			PINB_DL,
+			PINB_CL;
+#endif //ESP8266
 		uint8_t* BUFFER;
 	public:
 		AESYS9929B(
