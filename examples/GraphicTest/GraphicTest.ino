@@ -1,3 +1,10 @@
+/*
+ * Graphic test for AESYS9929B LED displays
+ * Please note, that this test also does a full-on, which leads to excessive current draw!
+ * Make sure that you have an appropriate power supply (40W per full panel) or comment out those lines.
+ * Do not use GPIO16 for data or clock signals.
+ */
+
 #include <AESYS9929B.h>
 
 #ifdef ESP8266 //Wemos D1 Mini
@@ -23,13 +30,18 @@ const float mean_over = 20.0;
 uint16_t b = 0;
 uint8_t d = 0;
 
-// Single Panels have left jumper (above first connector) closed. That means common data path
+/*
+ * First Panels have left jumper (above first connector) closed. That means common data path
+ */
 //AESYS9929B led( 28, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
-// Longer Panels have right jumper closed which means separate data paths.
-// You may change the short panel to the right jumper if you're having issues with artifacts.
-AESYS9929B led( 28, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
-//AESYS9929B led(160, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side destination display
-//AESYS9929B led(200, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Front display
+//AESYS9929B led( 40, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Single full display
+//AESYS9929B led(120, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side destination display
+AESYS9929B led(160, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Front display
+/*
+ * Panels 2+ have right jumper closed which means separate data paths.
+ * You may change the first panel to the right jumper if you're having issues with artifacts.
+ */
+//AESYS9929B led( 28, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
 
 void setup() {
 	Serial.begin(115200);
@@ -97,16 +109,25 @@ void setup() {
 }
 
 void loop() {
+	/*
+	 * For Wemos put 130 kOhm in series (between "Light" and D0)
+	 * to have same analog levels as Nano or else (voltage divider for 5V -> 1V)
+	 */
 	float blevel;
 	for (uint8_t i = 0; i < mean_over; i++) {
-		blevel += analogRead(LIGHT) / (float)mean_over;
+		uint16_t b = 1024;
+		for (uint8_t j = 0; j < 10 && b == 1024; j++) b = analogRead(LIGHT);
+		if (b == 1024) return;
+		Serial.println(b);
+		blevel += b / (float)mean_over;
 		delay(1000);
 	}
+	Serial.print("Level: ");
 	Serial.println(blevel);
 	uint8_t i = d;
 	if (blevel > 700) {
 		d = 255;
-	} else if (blevel > 600) {
+	} else if (blevel > 500) {
 		d = 127;
 	} else {
 		d = 50;
