@@ -260,6 +260,12 @@ void showIndex() {
 			node = dc;
 			Serial.println(node->text);
 		}
+		if (server.hasArg("brightness")) {
+			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
+		}
+		if (server.hasArg("setCycle")) {
+			cycleOn = server.hasArg("cycle");
+		}
 		if (server.hasArg("add") | server.hasArg("edit")) {
 			if (
 				!server.hasArg("displaytype") |
@@ -331,19 +337,21 @@ void showIndex() {
 		}
 	}
 	
-	String html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><style>.table{display:table}form,.headline{display:table-row}.cell{display:table-cell}.desc{display:none}.head{display:table-cell}</style><head><body><h2>AESYSconf</h2>";
+	String html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><style>input[type=number]{width:100px;}.table{display:table}form,.headline{display:table-row}.cell{display:table-cell}.desc{display:none}.head{display:table-cell}@media screen and (max-width:1000px){input[type=submit]{width:33%;}.table{display:block}form{display:block;}.headline{display:none;}.desc{display:inline-block;width:50%;border-bottom:thin solid black}.cell{display:inline-block;}.cell:first-child,.cell:last-child{display:block;}}</style><head><body><h2>AESYSconf</h2>";
 	uint8_t i = 0;
 	DisplayContent* dc = content;
 	html += "Max width for small text (two lines each): ";
 	html += led.width() / 6;
 	html += "<br>Max width for big text (single line): ";
 	html += led.width() / 12;
+	html += String("<form method=\"post\">Brightness <input type=\"number\" name=\"brightness\" min=\"10\" max=\"255\" value=\"") + maxBrightness + "\" /><input type=\"submit\" value=\"Set\" /></form><br>";
+	html += String("<form method=\"post\">Cycle (off=static) <input type=\"checkbox\" name=\"cycle\"") + (cycleOn ? " checked" : "") + " /><input type=\"submit\" name=\"setCycle\"  value=\"Set\" /></form><br>";
 	html += "<div class=\"table\"><div class=\"headline\"><div class=\"head\">ID</div><div class=\"head\">Active</div><div class=\"head\">Display</div><div class=\"head\">Text</div><div class=\"head\">Marquee Speed</div><div class=\"head\">Duration (ms)</div><div class=\"head\">Fade In</div><div class=\"head\">Speed</div><div class=\"head\">Fade Out</div><div class=\"head\">Speed</div><div class=\"head\">Action</div></div>";
 	while (dc != NULL) {
 		Serial.println("Next node");
 		html += "<form method=\"post\"><div class=\"cell\">";
 		if (dc->text == NULL) {
-			html += "Add new";
+			html += "New";
 		} else {
 			html += i;
 		}
@@ -369,7 +377,7 @@ void showIndex() {
 			html += String("<div class=\"desc\">Fade Speed</div><div class=\"cell\"><input type=\"number\" min=\"1\" name=\"") + (j == 0 ? "fadeInSpeed" : "fadeOutSpeed") + "\" value=\"" + (j == 0 ? dc-> fadeInSpeed : dc->fadeOutSpeed) + "\" /></div>";
 		}
 		if (dc->text == NULL) {
-			html += String("<div class=\"cell\"><input type=\"submit\" name=\"add\" value=\"Save\" /></div>");
+			html += String("<div class=\"cell\"><input type=\"submit\" name=\"add\" value=\"Add\" /></div>");
 		} else {
 			html += String("<div class=\"cell\"><input type=\"hidden\" name=\"id\" value=\"") + i + "\" />";
 			html += String("<input type=\"submit\" name=\"edit\" value=\"Update\" /><input type=\"submit\" name=\"delete\" value=\"Delete\" /><input type=\"submit\" name=\"show\" value=\"Show\" /></div>");
