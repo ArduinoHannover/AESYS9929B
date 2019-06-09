@@ -1,12 +1,12 @@
 #include <AESYS9929B.h>
-
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 
 //needed for library
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
-#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
 #include <FS.h>
+
+//#define ONLY_AP_MODE //Do not try to connect to base station instead just open an access point
 
 const uint8_t OE    = 16; //D0
 const uint8_t LATCH = 14; //D5
@@ -29,13 +29,44 @@ AESYS9929B led( 40, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Single full displa
  */
 //AESYS9929B led( 28, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
 
-IPAddress AP_IP(10,0,0,1);
-IPAddress AP_Sub(255,255,255,0);
+const IPAddress AP_IP(10,0,0,1);
+const IPAddress AP_SUB(255,255,255,0);
+
+const char* AP_PASS = NULL; // Set to NULL if no password needed, otherwise set to minimum 8 chars
+
+// You don't need to change anything from here on
+
+#ifndef ONLY_AP_MODE
+	#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
+#endif //ONLY_AP_MODE
 
 ESP8266WebServer server(80);
 
 enum DisplayType {SMALLTEXT, BIGTEXT, MARQUEE};
-enum FadeType {FADE_APPEAR, FADE_DOWN, FADE_LEFT, FADE_RIGHT, FADE_UP, FADE_DIM};
+enum FadeType {
+	FADE_APPEAR,
+	FADE_DOWN,
+	FADE_LEFT,
+	FADE_RIGHT,
+	FADE_UP,
+	FADE_SLIDE_DOWN,
+	FADE_SLIDE_LEFT,
+	FADE_SLIDE_RIGHT,
+	FADE_SLIDE_UP,
+	FADE_DIM
+};
+const char FadeTypeNames[][20] {
+	"Appear",
+	"Fade down",
+	"Fade left",
+	"Fade right",
+	"Fade up",
+	"Slide bottom",
+	"Slide left",
+	"Slide right",
+	"Slide top",
+	"Dim"
+};
 struct DisplayContent {
 	boolean active;
 	DisplayType display;
@@ -49,9 +80,9 @@ struct DisplayContent {
 	DisplayContent* previous;
 	DisplayContent* next;
 };
-DisplayContent* content = NULL;
-DisplayContent* last = NULL;
-DisplayContent* current = NULL;
+DisplayContent* firstNode = NULL;
+DisplayContent* lastNode = NULL;
+DisplayContent* currentNode = NULL;
 
 uint8_t maxBrightness = 255;
 boolean cycleOn = true;
@@ -62,22 +93,27 @@ uint32_t
 
 void setup() {
 	Serial.begin(115200);
-	WiFiManager wifiManager;
 	led.dim(255);
-	wifiManager.setAPStaticIPConfig(AP_IP, AP_IP, AP_Sub);
-	
-	wifiManager.setAPCallback(cannotConnect);
-	
-	Serial.println("Autoconnect");
-
-	marquee("Connecting...", 20);
 	
 	char buf[20];
 	strcpy(buf, "AESYS_");
 	sprintf(&buf[strlen(buf)], "%x", ESP.getChipId());
+#ifdef ONLY_AP_MODE
+	WiFi.mode(WIFI_AP);
+	WiFi.softAPConfig(AP_IP, AP_IP, AP_SUB);
+	WiFi.softAP(buf, AP_PASS);
+	marquee(String("Connected to ") + buf + " and open " + AP_IP.toString(), 20);
+#else
+	Serial.println("Autoconnect");
+	marquee("Connecting...", 20);
+	WiFiManager wifiManager;
+	wifiManager.setAPStaticIPConfig(AP_IP, AP_IP, AP_SUB);
+	wifiManager.setAPCallback(cannotConnect);
 	wifiManager.autoConnect(buf);
-
+	wifiManager.autoConnect(buf, AP_PASS);
 	marquee(String("Connected: ")+WiFi.localIP().toString(), 20);
+#endif //ONLY_AP_MODE
+	
 	server.on("/", showIndex);
 	server.on("/config.csv", showConfig);
 	server.begin();
@@ -111,25 +147,26 @@ void cannotConnect(WiFiManager *wifiManager) {
 }
 
 void parseConfig() {
-	Serial.println("Resetting data");
-	content = NULL;
-	while (last != NULL) {
-		DisplayContent* pre = last;
-		if (last->previous) {
-			pre = last->previous;
-			free(last);
-			if (pre != NULL) {
-				pre->next = NULL;
-			}
-			last = pre;
-		}
+	Serial.println("(Re)loading data");
+	while (deleteNode(currentNode));
+	{	
+		DisplayContent* node = (DisplayContent*)calloc(1, sizeof(DisplayContent));
+		node->active = 1;
+		node->display = MARQUEE;
+		node->speed = 20;
+		node->duration = 10000;
+		node->fadeIn = FADE_APPEAR;
+		node->fadeOut = FADE_APPEAR;
+		node->fadeInSpeed = 10;
+		node->fadeOutSpeed = 10;
+		insertNodeBeforeLast(node);
 	}
 	File f = SPIFFS.open("/config.csv", "r");
 	if (f) {
 		while (f.available()) {
 			String cont = f.readStringUntil('\n');
 			Serial.println(cont);
-			DisplayContent* node = (DisplayContent*)malloc(sizeof(DisplayContent));
+			DisplayContent* node = (DisplayContent*)calloc(1, sizeof(DisplayContent));
 			uint8_t pos = 0;
 			uint8_t npos = cont.indexOf(';', pos);
 			node->active = atoi(cont.substring(pos, npos).c_str());
@@ -155,44 +192,17 @@ void parseConfig() {
 			npos = cont.indexOf(';', pos);
 			node->fadeOutSpeed = atoi(cont.substring(pos, npos).c_str());
 			String t = cont.substring(npos + 1);
-			node->text = (char*)malloc(sizeof(char) * (t.length() + 1));
-			node->previous = NULL;
-			node->next = NULL;
+			node->text = (char*)calloc(t.length() + 1, sizeof(char));
 			strcpy(node->text, t.c_str());
-			if (last == NULL) {
-				content = node;
-			} else {
-				last->next = node;
-				node->previous = last;
-			}
-			last = node;
+			insertNodeBeforeLast(node);
 			Serial.println("Node added");
 		}
 		f.close();
 	}
-	DisplayContent* node = (DisplayContent*)malloc(sizeof(DisplayContent));
-	node->active = 1;
-	node->display = MARQUEE;
-	node->speed = 20;
-	node->duration = 10000;
-	node->fadeIn = FADE_APPEAR;
-	node->fadeOut = FADE_APPEAR;
-	node->fadeInSpeed = 10;
-	node->fadeOutSpeed = 10;
-	node->text = NULL;
-	node->previous = NULL;
-	node->next = NULL;
-	if (last == NULL) {
-		content = node;
-	} else {
-		last->next = node;
-		node->previous = last;
-	}
-	last = node;
-	current = content;
+	currentNode = firstNode;
 	if (cycleOn) {
-		while (!current->active && current != last) {
-			current = current->next;
+		while (!currentNode->active && currentNode != lastNode) {
+			currentNode = currentNode->next;
 		}
 		animationStart = millis();
 		displayStart = 0;
@@ -201,10 +211,9 @@ void parseConfig() {
 }
 
 void saveConfig() {
-	DisplayContent* dc = content;
+	DisplayContent* dc = firstNode;
 	File f = SPIFFS.open("/config.csv", "w");
 	while (dc->text != NULL) {
-		Serial.println("Adding node");
 		f.write(dc->active ? '1' : '0');
 		f.write(';');
 		f.print(dc->display, DEC);
@@ -222,7 +231,6 @@ void saveConfig() {
 		f.print(dc->fadeOutSpeed, DEC);
 		f.write(';');
 		String t = dc->text;
-		Serial.println(t);
 		t.replace("\n", "\\n");
 		f.print(t);
 		f.write('\n');
@@ -239,27 +247,74 @@ void showConfig() {
 	}
 }
 
+DisplayContent* getNode(uint8_t index) {
+	uint8_t i = 0;
+	if (firstNode == NULL) return NULL;
+	DisplayContent* dc = firstNode;
+	while (i < index && dc->text != NULL) {
+		dc = dc->next;
+		if (dc == NULL) return NULL;
+		i++;
+	}
+	if (i < index) {
+		return NULL;
+	}
+	return dc;
+}
+
+bool deleteNode(uint8_t index) {
+	DisplayContent* dc = getNode(index);
+	return deleteNode(dc);
+}
+
+bool deleteNode(DisplayContent* dc) {
+	if (dc == NULL) return false;
+	if (dc->previous != NULL) {
+		(dc->previous)->next = dc->next;
+	} else {
+		firstNode = dc->next; // NULL if only element
+	}
+	if (dc->next != NULL) {
+		(dc->next)->previous = dc->previous;
+	} else {
+		lastNode = dc->previous; // NULL if only element
+	}
+	free(dc);
+	return true;
+}
+
+void insertNodeBeforeLast(DisplayContent* dc) {
+	if (dc == NULL) return;
+	dc->next = lastNode; //Empty element or NULL if first inserted
+	if (lastNode != NULL) {
+		if (lastNode->previous != NULL) {
+			dc->previous = lastNode->previous;
+			(dc->previous)->next = dc;
+		} else {
+			firstNode = dc;
+		}
+		lastNode->previous = dc;
+	} else {
+		lastNode = dc;
+	}
+	if (firstNode == NULL) {
+		firstNode = dc;
+	}
+}
+
+void getText(String& text) {
+	text = currentNode->text;
+	text.replace("\xC3\x84", "\x8E"); //Ä
+	text.replace("\xC3\xA4", "\x84"); //ä
+	text.replace("\xC3\x96", "\x99"); //Ö
+	text.replace("\xC3\xB6", "\x94"); //ö
+	text.replace("\xC3\x9C", "\x9A"); //Ü
+	text.replace("\xC3\xBC", "\x81"); //ü
+	text.replace("\xC3\x9F", "\xE0"); //ß
+}
+
 void showIndex() {
 	if (server.method() == HTTP_POST) {
-		Serial.println("Post");
-		DisplayContent* node;
-		if (server.hasArg("id")) {
-			Serial.print("Searching for ID ");
-			uint8_t i = 0;
-			uint8_t d = atoi(server.arg("id").c_str());
-			Serial.println(d);
-			DisplayContent* dc = content;
-			while (i < d && dc->text != NULL) {
-				dc = dc->next;
-				i++;
-			}
-			if (i < d) {
-				server.send(400, "text/plain", "ID does not exist.");
-				return;
-			}
-			node = dc;
-			Serial.println(node->text);
-		}
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
 		}
@@ -279,12 +334,17 @@ void showIndex() {
 				) {
 				server.send(400, "text/plain", "Missing param.");
 			}
+			DisplayContent* node;
 			if (server.hasArg("add")) {
 				Serial.println("add");
-				node = (DisplayContent*)malloc(sizeof(DisplayContent));
-			}
-			if (server.hasArg("edit")) {
+				node = (DisplayContent*)calloc(1, sizeof(DisplayContent));
+			} else {
 				Serial.println("edit");
+				node = getNode(atoi(server.arg("id").c_str()));
+				if (node == NULL) {
+					server.send(400, "text/plain", "ID does not exist.");
+					return;
+				}
 			}
 			
 			node->active = server.hasArg("active");
@@ -295,115 +355,123 @@ void showIndex() {
 			node->fadeOut = (FadeType)atoi(server.arg("fadeOut").c_str());
 			node->fadeInSpeed = max(1, atoi(server.arg("fadeInSpeed").c_str()));
 			node->fadeOutSpeed = max(1, atoi(server.arg("fadeOutSpeed").c_str()));
-			if (server.hasArg("add")) {
-				node->text = (char*)malloc(sizeof(char) * (server.arg("text").length() + 1));
-			} else {
-				node->text = (char*)realloc(node->text, sizeof(char) * (server.arg("text").length() + 1));
-			}
+			node->text = (char*)realloc(node->text, sizeof(char) * (server.arg("text").length() + 1));
 			strcpy(node->text, server.arg("text").c_str());
+			
 			if (server.hasArg("add")) {
-				Serial.println("Insert element");
-				node->next = last; //Empty element
-				node->previous = NULL;
-				if (last->previous == NULL) {
-					content = node; 
-				} else {
-					node->previous = last->previous;
-					(node->previous)->next = node;
-				}
-				last->previous = node;
+				insertNodeBeforeLast(node);
 			}
 			saveConfig();
 		}
 		if (server.hasArg("delete")) {
-			if (node->previous != NULL) {
-				(node->previous)->next = node->next;
+			if (!deleteNode(atoi(server.arg("id").c_str()))) {
+				server.send(400, "text/plain", "ID does not exist.");
 			}
-			if (node->next != NULL) {
-				(node->next)->previous = node->previous;
-			}
-			if (current == node) {
-				current = NULL;
-			}
-			free(node);
 			saveConfig();
 		}
 		if (server.hasArg("show")) {
+			currentNode = getNode(atoi(server.arg("id").c_str()));
 			animationStart = millis();
 			displayStart = 0;
 			animationEnd = 0;
-			current = node;
 			Serial.println("show");
 		}
 	}
+
+	server.sendContent("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n");
 	
-	String html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" /><style>input[type=number]{width:100px;}.table{display:table}form,.headline{display:table-row}.cell{display:table-cell}.desc{display:none}.head{display:table-cell}@media screen and (max-width:1000px){input[type=submit]{width:33%;}.table{display:block}form{display:block;}.headline{display:none;}.desc{display:inline-block;width:50%;border-bottom:thin solid black}.cell{display:inline-block;}.cell:first-child,.cell:last-child{display:block;}}</style><head><body><h2>AESYSconf</h2>";
+	server.sendContent("<html>\n<head>\n<title>AESYSconf</title>\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<style>input[type=number]{width:100px;}\n.table{display:table}\nform,.headline{display:table-row}\n.cell{display:table-cell}\n.desc{display:none}\n.head{display:table-cell}\n@media screen and (max-width:1000px){\n\tinput[type=submit]{width:33%;}\n\t.table{display:block}\n\tform{display:block;}\n\t.headline{display:none;}\n\t.desc{display:inline-block;width:50%;border-bottom:thin solid black}\n\t.cell{display:inline-block;}\n\t.cell:first-child,.cell:last-child{display:block;}\n}\n</style>\n<head>\n<body>\n<h2>AESYSconf</h2>");
+	DisplayContent* dc = firstNode;
+	server.sendContent(String("Max width for small text (two lines each): ") + (led.width() / 6) + "\n<br>\nMax width for big text (single line): " + (led.width() / 12) + "\n<br>\n");
+	server.sendContent(String("<form method=\"post\">\nBrightness\n<input type=\"number\" name=\"brightness\" min=\"10\" max=\"255\" value=\"") + maxBrightness + "\" />\n<input type=\"submit\" value=\"Set\" />\n</form>\n<br>\n");
+	server.sendContent(String("<form method=\"post\">\nCycle (off=static)\n<input type=\"checkbox\" name=\"cycle\"") + (cycleOn ? " checked" : "") + " />\n<input type=\"submit\" name=\"setCycle\" value=\"Set\" />\n</form>\n<br>\n");
+	server.sendContent("<div class=\"table\">\n<div class=\"headline\">\n<div class=\"head\">ID</div>\n<div class=\"head\">Active</div>\n<div class=\"head\">Display</div>\n<div class=\"head\">Text</div>\n<div class=\"head\">Marquee Speed</div>\n<div class=\"head\">Duration (ms)</div>\n<div class=\"head\">Fade In</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Fade Out</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Action</div>\n</div>");
 	uint8_t i = 0;
-	DisplayContent* dc = content;
-	html += "Max width for small text (two lines each): ";
-	html += led.width() / 6;
-	html += "<br>Max width for big text (single line): ";
-	html += led.width() / 12;
-	html += String("<form method=\"post\">Brightness <input type=\"number\" name=\"brightness\" min=\"10\" max=\"255\" value=\"") + maxBrightness + "\" /><input type=\"submit\" value=\"Set\" /></form><br>";
-	html += String("<form method=\"post\">Cycle (off=static) <input type=\"checkbox\" name=\"cycle\"") + (cycleOn ? " checked" : "") + " /><input type=\"submit\" name=\"setCycle\"  value=\"Set\" /></form><br>";
-	html += "<div class=\"table\"><div class=\"headline\"><div class=\"head\">ID</div><div class=\"head\">Active</div><div class=\"head\">Display</div><div class=\"head\">Text</div><div class=\"head\">Marquee Speed</div><div class=\"head\">Duration (ms)</div><div class=\"head\">Fade In</div><div class=\"head\">Speed</div><div class=\"head\">Fade Out</div><div class=\"head\">Speed</div><div class=\"head\">Action</div></div>";
 	while (dc != NULL) {
-		Serial.println("Next node");
-		html += "<form method=\"post\"><div class=\"cell\">";
+		server.sendContent("<form method=\"post\">\n<div class=\"cell\">\n");
 		if (dc->text == NULL) {
-			html += "New";
+			server.sendContent("New");
 		} else {
-			html += i;
+			server.sendContent(String(i));
 		}
-		html += String("</div><div class=\"desc\">Active</div><div class=\"cell\"><input name=\"active\" type=\"checkbox\"") + (dc->active ? " checked" : "") + " /></div><div class=\"desc\">Type</div>";
-		html += "<div class=\"cell\"><select name=\"displaytype\">";
-		html += String("<option value=\"0\"") + (dc->display == SMALLTEXT ? " selected" : "") + ">Small text (2 lines)</option>";
-		html += String("<option value=\"1\"") + (dc->display == BIGTEXT ? " selected" : "") + ">Big text (single line)</option>";
-		html += String("<option value=\"2\"") + (dc->display == MARQUEE ? " selected" : "") + ">Marquee (single line)</option>";
-		html += String("</select></div><div class=\"desc\">Text</div><div class=\"cell\"><input style=\"font-family:monospace\" name=\"text\" type=\"text\" style=\"width: 100%;\" value=\"") + (dc->text == NULL ? "" : dc->text) + "\" /></div>";
-		html += String("<div class=\"desc\">Marquee speed</div><div class=\"cell\"><input type=\"number\" min=\"1\" name=\"speed\" value=\"") + dc->speed + "\" /></div>";
-		html += String("<div class=\"desc\">Display duration</div><div class=\"cell\"><input type=\"number\" min=\"0\" name=\"duration\" value=\"") + dc->duration + "\" /></div>";
+		server.sendContent(String("</div>\n<div class=\"desc\">Active</div>\n<div class=\"cell\">\n<input name=\"active\" type=\"checkbox\"") + (dc->active ? " checked" : "") + " />\n</div>\n<div class=\"desc\">Type</div>\n");
+		server.sendContent("<div class=\"cell\">\n<select name=\"displaytype\">\n");
+		server.sendContent(String("<option value=\"0\"") + (dc->display == SMALLTEXT ? " selected" : "") + ">Small text (2 lines)</option>\n");
+		server.sendContent(String("<option value=\"1\"") + (dc->display == BIGTEXT ? " selected" : "") + ">Big text (single line)</option>\n");
+		server.sendContent(String("<option value=\"2\"") + (dc->display == MARQUEE ? " selected" : "") + ">Marquee (single line)</option>\n");
+		server.sendContent(String("</select>\n</div>\n<div class=\"desc\">\nText\n</div>\n<div class=\"cell\">\n<input style=\"font-family:monospace\" name=\"text\" type=\"text\" style=\"width: 100%;\" value=\"") + (dc->text == NULL ? "" : dc->text) + "\" />\n</div>\n");
+		server.sendContent(String("<div class=\"desc\">\nMarquee speed\n</div>\n<div class=\"cell\">\n<input type=\"number\" min=\"1\" name=\"speed\" value=\"") + dc->speed + "\" />\n</div>\n");
+		server.sendContent(String("<div class=\"desc\">\nDisplay duration\n</div>\n<div class=\"cell\">\n<input type=\"number\" min=\"0\" name=\"duration\" value=\"") + dc->duration + "\" />\n</div>\n");
 		for (uint8_t j = 0; j < 2; j++) {
-			FadeType f = j == 0 ? f = dc->fadeIn : f = dc->fadeOut;
-			html += "<div class=\"desc\">";
-			html += j == 0 ? "Fade In</div><div class=\"cell\"><select name=\"fadeIn\">" : "Fade Out</div><div class=\"cell\"><select name=\"fadeOut\">";
-			html += String("<option value=\"0\"") + (f == FADE_APPEAR ? " selected" : "") + ">Appear</option>";
-			html += String("<option value=\"1\"") + (f == FADE_DOWN ? " selected" : "") + ">Fade down</option>";
-			html += String("<option value=\"2\"") + (f == FADE_LEFT ? " selected" : "") + ">Fade left</option>";
-			html += String("<option value=\"3\"") + (f == FADE_RIGHT ? " selected" : "") + ">Fade right</option>";
-			html += String("<option value=\"4\"") + (f == FADE_UP ? " selected" : "") + ">Fade up</option>";
-			html += String("<option value=\"5\"") + (f == FADE_DIM ? " selected" : "") + ">Dim</option>";
-			html += "</select></div>";
-			html += String("<div class=\"desc\">Fade Speed</div><div class=\"cell\"><input type=\"number\" min=\"1\" name=\"") + (j == 0 ? "fadeInSpeed" : "fadeOutSpeed") + "\" value=\"" + (j == 0 ? dc-> fadeInSpeed : dc->fadeOutSpeed) + "\" /></div>";
+			FadeType f = j == 0 ? dc->fadeIn : dc->fadeOut;
+			server.sendContent("<div class=\"desc\">\n");
+			server.sendContent(j == 0 ? "Fade In</div>\n<div class=\"cell\">\n<select name=\"fadeIn\">" : "Fade Out</div>\n<div class=\"cell\">\n<select name=\"fadeOut\">\n");
+			for (uint8_t i = 0; i < sizeof(FadeTypeNames) / sizeof(FadeTypeNames[0]) / sizeof(FadeTypeNames[0][0]); i++) {
+				server.sendContent(String("<option value=\"") + i + "\"" + (f == i ? " selected" : "") + ">" + FadeTypeNames[i] + "</option>\n");
+			}
+			server.sendContent(String("</select>\n</div>\n<div class=\"desc\">Fade Speed</div>\n<div class=\"cell\"><input type=\"number\" min=\"1\" name=\"") + (j == 0 ? "fadeInSpeed" : "fadeOutSpeed") + "\" value=\"" + (j == 0 ? dc-> fadeInSpeed : dc->fadeOutSpeed) + "\" /></div>\n");
 		}
 		if (dc->text == NULL) {
-			html += String("<div class=\"cell\"><input type=\"submit\" name=\"add\" value=\"Add\" /></div>");
+			server.sendContent("<div class=\"cell\"><input type=\"submit\" name=\"add\" value=\"Add\" /></div>\n");
 		} else {
-			html += String("<div class=\"cell\"><input type=\"hidden\" name=\"id\" value=\"") + i + "\" />";
-			html += String("<input type=\"submit\" name=\"edit\" value=\"Update\" /><input type=\"submit\" name=\"delete\" value=\"Delete\" /><input type=\"submit\" name=\"show\" value=\"Show\" /></div>");
+			server.sendContent(String("<div class=\"cell\"><input type=\"hidden\" name=\"id\" value=\"") + i + "\" />\n");
+			server.sendContent("<input type=\"submit\" name=\"edit\" value=\"Update\" />\n<input type=\"submit\" name=\"delete\" value=\"Delete\" />\n<input type=\"submit\" name=\"show\" value=\"Show\" /></div>\n");
 		}
-		html += "</form>";
+		server.sendContent("</form>");
 		i++;
 		if (dc->next == NULL) break;
 		dc = dc->next;
 	}
-	html += "</div></body></html>";
-	server.send(200, "text/html", html);
+	server.sendContent("</div>\n</body>\n</html>");
 }
 
 bool animate() {
 	bool end = animationEnd;
-	FadeType f = end ? current->fadeOut : current->fadeIn;
-	uint16_t frame = (millis() - (end ? animationEnd : animationStart)) / (end ? current->fadeOutSpeed : current->fadeInSpeed);
-	led.setTextWrap(true);
-	if (current->display == BIGTEXT) {
+	FadeType f = end ? currentNode->fadeOut : currentNode->fadeIn;
+	int16_t frame = (millis() - (end ? animationEnd : animationStart)) / (end ? currentNode->fadeOutSpeed : currentNode->fadeInSpeed);
+	if (currentNode->display == BIGTEXT) {
 		led.setTextSize(2);
 	} else {
 		led.setTextSize(1);
 	}
 	led.fillScreen(0);
+	String text;
+	getText(text);
+	if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT || f == FADE_SLIDE_UP || f == FADE_SLIDE_DOWN) {
+		led.setTextWrap(false);
+		if (currentNode->display == BIGTEXT) {
+			text = text.substring(0, led.width() - 1 / 12);
+		}
+		if (currentNode->display == SMALLTEXT) {
+			text = text.substring(0, led.width() / 6) + "\n" + text.substring(led.width() / 6, (led.width() / 6) * 2);
+		}
+		switch (f) {
+			case FADE_SLIDE_LEFT:
+				led.setCursor(end ? -frame : (-led.width() + frame), 1);
+				break;
+			case FADE_SLIDE_RIGHT:
+				led.setCursor(end ? frame : (led.width() - frame), 1);
+				break;
+			case FADE_SLIDE_UP:
+				led.setCursor(0, 1 + (end ? -frame : (-led.height() + frame)));
+				break;
+			case FADE_SLIDE_DOWN:
+				led.setCursor(0, 1 + (end ? frame : (led.height() - frame)));
+				break;
+			default:
+				break;
+		}
+		led.print(text);
+		led.display();
+		led.dim(maxBrightness);
+		if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT) {
+			return frame >= led.width();
+		}
+		return frame >= led.height();
+	}
+	led.setTextWrap(true);
 	led.setCursor(0, 1);
-	led.print(current->text);
+	led.print(text);
 	switch (f) {
 		case FADE_DIM:
 			led.dim(min((uint16_t)maxBrightness, (uint16_t)(end ? maxBrightness - frame : frame)));
@@ -444,56 +512,56 @@ bool animate() {
 
 void loop() {
 	server.handleClient();
-	if (current != NULL && current->text != NULL) {
+	if (currentNode != NULL && currentNode->text != NULL) {
 		if (animationStart != 0 && displayStart == 0) {
-			bool next = current->fadeIn == FADE_APPEAR | current->display == MARQUEE;
+			bool next = (currentNode->fadeIn == FADE_APPEAR) | (currentNode->display == MARQUEE);
 			if (!next) {
 				next = animate();
 			}
 			if (next) {
 				displayStart = millis();
 				animationEnd = 0;
-				Serial.println("Switching to display");
 			}
 		}
 		if (displayStart != 0 && animationEnd == 0) {
 			bool fout = false;
 			led.dim(maxBrightness);
-			if (current->display == MARQUEE) {
+			String text;
+			getText(text);
+			if (currentNode->display == MARQUEE) {
 				led.setTextWrap(false);
 				led.setTextSize(2);
-				int32_t l = strlen(current->text);
+				int32_t l = text.length();
 				l *= -12;
-				int32_t x = led.width() - (millis() - displayStart) / current->speed;
+				int32_t x = led.width() - (millis() - displayStart) / currentNode->speed;
 				if (x < l) {
 					fout = true;
 				}
 				led.fillScreen(0);
 				led.setCursor(x, 1);
-				led.print(current->text);
+				led.print(text);
 				led.display();
 			} else {
 				led.setTextWrap(true);
-				if (current->display == BIGTEXT) {
+				if (currentNode->display == BIGTEXT) {
 					led.setTextSize(2);
 				} else {
 					led.setTextSize(1);
 				}
 				led.fillScreen(0);
 				led.setCursor(0, 1);
-				led.print(current->text);
+				led.print(text);
 				led.display();
-				if (displayStart + current->duration < millis() && cycleOn) {
+				if (displayStart + currentNode->duration < millis() && cycleOn) {
 					fout = true;
 				}
 			}
 			if (fout) {
 				animationEnd = millis();
-				Serial.println("Switching to Fadeout");
 			}
 		}
 		if (displayStart != 0 && animationEnd != 0) {
-			bool next = current->fadeIn == FADE_APPEAR | current->display == MARQUEE;
+			bool next = (currentNode->fadeIn == FADE_APPEAR) | (currentNode->display == MARQUEE);
 			if (!next) {
 				next = animate();
 			}
@@ -502,16 +570,15 @@ void loop() {
 				displayStart = 0;
 				animationEnd = 0;
 				if (cycleOn) {
-					DisplayContent* dc = current;
+					DisplayContent* dc = currentNode;
 					do {
-						if (current->next == last) {
-							current = content;
+						if (currentNode->next == lastNode) {
+							currentNode = firstNode;
 						} else {
-							current = current->next;
+							currentNode = currentNode->next;
 						}
-					} while (!current->active && current != dc);
+					} while (!currentNode->active && currentNode != dc);
 				}
-				Serial.println("Switching to Fadein");
 			}
 		}
 	}
