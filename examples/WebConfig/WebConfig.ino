@@ -440,7 +440,7 @@ bool animate() {
 	if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT || f == FADE_SLIDE_UP || f == FADE_SLIDE_DOWN) {
 		led.setTextWrap(false);
 		int16_t x = 0;
-		int16_t y = 1;
+		int16_t y = currentNode->display == BIGTEXT;
 		switch (f) {
 			case FADE_SLIDE_LEFT:
 				x = end ? -frame : (-led.width() + frame);
@@ -449,10 +449,10 @@ bool animate() {
 				x = end ? frame : (led.width() - frame);
 				break;
 			case FADE_SLIDE_UP:
-				y = 1 + (end ? -frame : (-led.height() + frame));
+				y += end ? -frame : (-led.height() + frame);
 				break;
 			case FADE_SLIDE_DOWN:
-				y = 1 + (end ? frame : (led.height() - frame));
+				y += end ? frame : (led.height() - frame);
 				break;
 			default:
 				break;
@@ -474,7 +474,7 @@ bool animate() {
 		return frame >= led.height();
 	}
 	led.setTextWrap(true);
-	led.setCursor(0, 1);
+	led.setCursor(0, currentNode->display == BIGTEXT);
 	led.print(text);
 	switch (f) {
 		case FADE_DIM:
@@ -549,11 +549,12 @@ void loop() {
 				led.setTextWrap(true);
 				if (currentNode->display == BIGTEXT) {
 					led.setTextSize(2);
+					led.setCursor(0, 1);
 				} else {
 					led.setTextSize(1);
+					led.setCursor(0, 0);
 				}
 				led.fillScreen(0);
-				led.setCursor(0, 1);
 				led.print(text);
 				led.display();
 				if (displayStart + currentNode->duration < millis() && cycleOn) {
