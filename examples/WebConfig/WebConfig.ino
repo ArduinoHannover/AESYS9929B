@@ -439,29 +439,33 @@ bool animate() {
 	getText(text);
 	if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT || f == FADE_SLIDE_UP || f == FADE_SLIDE_DOWN) {
 		led.setTextWrap(false);
-		if (currentNode->display == BIGTEXT) {
-			text = text.substring(0, led.width() - 1 / 12);
-		}
-		if (currentNode->display == SMALLTEXT) {
-			text = text.substring(0, led.width() / 6) + "\n" + text.substring(led.width() / 6, (led.width() / 6) * 2);
-		}
+		int16_t x = 0;
+		int16_t y = 1;
 		switch (f) {
 			case FADE_SLIDE_LEFT:
-				led.setCursor(end ? -frame : (-led.width() + frame), 1);
+				x = end ? -frame : (-led.width() + frame);
 				break;
 			case FADE_SLIDE_RIGHT:
-				led.setCursor(end ? frame : (led.width() - frame), 1);
+				x = end ? frame : (led.width() - frame);
 				break;
 			case FADE_SLIDE_UP:
-				led.setCursor(0, 1 + (end ? -frame : (-led.height() + frame)));
+				y = 1 + (end ? -frame : (-led.height() + frame));
 				break;
 			case FADE_SLIDE_DOWN:
-				led.setCursor(0, 1 + (end ? frame : (led.height() - frame)));
+				y = 1 + (end ? frame : (led.height() - frame));
 				break;
 			default:
 				break;
 		}
-		led.print(text);
+		led.setCursor(x, y);
+		if (currentNode->display == BIGTEXT) {
+			led.print(text.substring(0, led.width() - 1 / 12));
+		}
+		if (currentNode->display == SMALLTEXT) {
+			led.print(text.substring(0, led.width() / 6));
+			led.setCursor(x, y + 8);
+			led.print(text.substring(led.width() / 6, (led.width() / 6) * 2));
+		}
 		led.display();
 		led.dim(maxBrightness);
 		if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT) {
