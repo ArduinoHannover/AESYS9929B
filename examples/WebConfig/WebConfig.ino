@@ -75,7 +75,9 @@ uint32_t
 
 void setup() {
 	Serial.begin(115200);
-	led.dim(255);
+	SPIFFS.begin();
+	parseConfig();
+	led.dim(maxBrightness);
 	
 	char buf[20];
 	strcpy(buf, "AESYS_");
@@ -132,8 +134,8 @@ void setup() {
 	server.on("/", showIndex);
 	server.on("/config.csv", showConfig);
 	server.begin();
-	SPIFFS.begin();
-	parseConfig();
+	//Reset timer
+	animationStart = millis();
 }
 
 void marquee(String text, uint16_t speed) {
@@ -218,18 +220,30 @@ void parseConfig() {
 	} else {
 		Serial.println("Nothing to load");
 	}
+	Serial.println("Nodes loaded");
+	f = SPIFFS.open("/brightness", "r");
+	if (f) {
+		maxBrightness = min(255, max(10, atoi(f.readStringUntil('\n').c_str())));
+		f.close();
+		Serial.println("Brightness set");
+	}
+	f = SPIFFS.open("/cycle", "r");
+	if (f) {
+		cycleOn = f.read() == '1';
+		f.close();
+		Serial.println("Cycling set");
+	}
 	if (firstNode != lastNode) {
 		currentNode = firstNode;
 		if (cycleOn) {
 			while (!currentNode->active && currentNode != lastNode) {
 				currentNode = currentNode->next;
 			}
-			animationStart = millis();
-			displayStart = 0;
-			animationEnd = 0;
 		}
+		animationStart = millis();
+		displayStart = 0;
+		animationEnd = 0;
 	}
-	Serial.println("Nodes loaded");
 }
 
 void saveConfig() {
@@ -258,6 +272,18 @@ void saveConfig() {
 		f.write('\n');
 		dc = dc->next;
 	}
+	f.close();
+}
+
+void saveBrightness() {
+	File f = SPIFFS.open("/brightness", "w");
+	f.println(maxBrightness);
+	f.close();
+}
+
+void saveCycle() {
+	File f = SPIFFS.open("/cycle", "w");
+	f.println(cycleOn);
 	f.close();
 }
 
@@ -343,9 +369,11 @@ void showIndex() {
 	if (server.method() == HTTP_POST) {
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
+			saveBrightness();
 		}
 		if (server.hasArg("setCycle")) {
 			cycleOn = server.hasArg("cycle");
+			saveCycle();
 		}
 		if (server.hasArg("add") | server.hasArg("edit")) {
 			if (
