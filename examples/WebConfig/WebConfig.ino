@@ -1,48 +1,30 @@
 #include <AESYS9929B.h>
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
+#include "config.h"
 
-//needed for library
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <FS.h>
 
-//#define ONLY_AP_MODE //Do not try to connect to base station instead just open an access point
+AESYS9929B led(DWIDTH, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE);
 
-const uint8_t OE    = 16; //D0
-const uint8_t LATCH = 14; //D5
-const uint8_t DAT_H = 12; //D6
-const uint8_t DAT_L = 13; //D7
-const uint8_t CLK_H =  2; //D4
-const uint8_t CLK_L = 15; //D8
-const uint8_t LIGHT =  0;
-
-/*
- * First Panels have left jumper (above first connector) closed. That means common data path
- */
-//AESYS9929B led( 28, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
-AESYS9929B led( 40, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Single full display
-//AESYS9929B led(120, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side destination display
-//AESYS9929B led(160, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE); //Front display
-/*
- * Panels 2+ have right jumper closed which means separate data paths.
- * You may change the first panel to the right jumper if you're having issues with artifacts.
- */
-//AESYS9929B led( 28, DAT_H, CLK_H, DAT_L, CLK_L, LATCH, OE); //Side number display
-
-const IPAddress AP_IP(10,0,0,1);
-const IPAddress AP_SUB(255,255,255,0);
-
-const char* AP_PASS = NULL; // Set to NULL if no password needed, otherwise set to minimum 8 chars
-
-// You don't need to change anything from here on
-
-#ifndef ONLY_AP_MODE
-	#include <WiFiManager.h>         //https://github.com/tzapu/WiFiManager
-#endif //ONLY_AP_MODE
+#ifndef USE_WIFI_MANAGER
+	#include <WiFiManager.h>      //https://github.com/tzapu/WiFiManager
+#endif //USE_WIFI_MANAGER
+#ifdef ENABLE_OTA
+	#include <ArduinoOTA.h>
+#endif //ENABLE_OTA
 
 ESP8266WebServer server(80);
 
-enum DisplayType {SMALLTEXT, BIGTEXT, MARQUEE};
+enum DisplayType {
+	SMALLTEXT,
+	BIGTEXT,
+	MARQUEE,
+	SMALLTEXT_BLINK,
+	BIGTEXT_BLINK
+};
 enum FadeType {
 	FADE_APPEAR,
 	FADE_DOWN,
@@ -98,6 +80,7 @@ void setup() {
 	char buf[20];
 	strcpy(buf, "AESYS_");
 	sprintf(&buf[strlen(buf)], "%x", ESP.getChipId());
+
 #ifdef ONLY_AP_MODE
 	WiFi.mode(WIFI_AP);
 	WiFi.softAPConfig(AP_IP, AP_IP, AP_SUB);
@@ -106,13 +89,45 @@ void setup() {
 #else
 	Serial.println("Autoconnect");
 	marquee("Connecting...", 20);
-	WiFiManager wifiManager;
-	wifiManager.setAPStaticIPConfig(AP_IP, AP_IP, AP_SUB);
-	wifiManager.setAPCallback(cannotConnect);
-	wifiManager.autoConnect(buf);
-	wifiManager.autoConnect(buf, AP_PASS);
+	#ifdef WIFI_MANAGER
+		WiFiManager wifiManager;
+		wifiManager.setAPStaticIPConfig(AP_IP, AP_IP, AP_SUB);
+		wifiManager.setAPCallback(cannotConnect);
+		wifiManager.autoConnect(buf, AP_PASS);
+	#else
+		#ifdef FIX_IP
+			WiFi.config(STA_IP, STA_GW, STA_SUB);
+		#endif //FIX_IP
+		WiFi.mode(WIFI_STA);
+		WiFi.begin(STA_SSID, STA_PASS);
+		while (WiFi.status() != WL_CONNECTED) {
+			led.fillScreen(0);
+			led.setCursor(0, 0);
+			switch ((millis() / 100) & 3) {
+				case 0:
+					led.write('|');break;
+				case 1:
+					led.write('/');break;
+				case 2:
+					led.write('-');break;
+				case 3:
+					led.write('\\');break;
+			}
+			led.display();
+			delay(20);
+		}
+	#endif
 	marquee(String("Connected: ")+WiFi.localIP().toString(), 20);
 #endif //ONLY_AP_MODE
+
+	MDNS.begin(MDNS_NAME);
+	MDNS.addService("http", "tcp", 80);
+#ifdef ENABLE_OTA
+	ArduinoOTA.setPort(8266);
+	ArduinoOTA.setPassword(OTA_PASS);
+	ArduinoOTA.setHostname(MDNS_NAME);
+	ArduinoOTA.begin();
+#endif //ENABLE_OTA
 	
 	server.on("/", showIndex);
 	server.on("/config.csv", showConfig);
@@ -129,7 +144,7 @@ void marquee(String text, uint16_t speed) {
 	for (int32_t x = led.width(); x > l; x--) {
 		uint32_t nextchar = millis() + speed;
 		led.fillScreen(0);
-		led.setCursor(x, 1);
+		led.setCursor(x, 0);
 		led.print(text);
 		led.display();
 		while (nextchar > millis()) yield();
@@ -137,7 +152,8 @@ void marquee(String text, uint16_t speed) {
 	}
 }
 
-void cannotConnect(WiFiManager *wifiManager) {
+#ifdef USE_WIFI_MANAGER
+void cannotConnect(WiFiManager* wifiManager) {
 	Serial.println("Cannot connect");
 	String text = "Cannot connect to last known WiFi. Please connect to ";
 	text += wifiManager->getConfigPortalSSID();
@@ -145,10 +161,11 @@ void cannotConnect(WiFiManager *wifiManager) {
 	text += AP_IP.toString();
 	marquee(text, 20);
 }
+#endif //USE_WIFI_MANAGER
 
 void parseConfig() {
 	Serial.println("(Re)loading data");
-	while (deleteNode(currentNode));
+	while (deleteNode(firstNode));
 	{	
 		DisplayContent* node = (DisplayContent*)calloc(1, sizeof(DisplayContent));
 		node->active = 1;
@@ -198,16 +215,21 @@ void parseConfig() {
 			Serial.println("Node added");
 		}
 		f.close();
+	} else {
+		Serial.println("Nothing to load");
 	}
-	currentNode = firstNode;
-	if (cycleOn) {
-		while (!currentNode->active && currentNode != lastNode) {
-			currentNode = currentNode->next;
+	if (firstNode != lastNode) {
+		currentNode = firstNode;
+		if (cycleOn) {
+			while (!currentNode->active && currentNode != lastNode) {
+				currentNode = currentNode->next;
+			}
+			animationStart = millis();
+			displayStart = 0;
+			animationEnd = 0;
 		}
-		animationStart = millis();
-		displayStart = 0;
-		animationEnd = 0;
 	}
+	Serial.println("Nodes loaded");
 }
 
 void saveConfig() {
@@ -279,6 +301,9 @@ bool deleteNode(DisplayContent* dc) {
 	} else {
 		lastNode = dc->previous; // NULL if only element
 	}
+	if (currentNode == dc) {
+		currentNode = NULL;
+	}
 	free(dc);
 	return true;
 }
@@ -314,6 +339,7 @@ void getText(String& text) {
 }
 
 void showIndex() {
+	Serial.println("HTTP Request");
 	if (server.method() == HTTP_POST) {
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
@@ -385,7 +411,7 @@ void showIndex() {
 	server.sendContent(String("Max width for small text (two lines each): ") + (led.width() / 6) + "\n<br>\nMax width for big text (single line): " + (led.width() / 12) + "\n<br>\n");
 	server.sendContent(String("<form method=\"post\">\nBrightness\n<input type=\"number\" name=\"brightness\" min=\"10\" max=\"255\" value=\"") + maxBrightness + "\" />\n<input type=\"submit\" value=\"Set\" />\n</form>\n<br>\n");
 	server.sendContent(String("<form method=\"post\">\nCycle (off=static)\n<input type=\"checkbox\" name=\"cycle\"") + (cycleOn ? " checked" : "") + " />\n<input type=\"submit\" name=\"setCycle\" value=\"Set\" />\n</form>\n<br>\n");
-	server.sendContent("<div class=\"table\">\n<div class=\"headline\">\n<div class=\"head\">ID</div>\n<div class=\"head\">Active</div>\n<div class=\"head\">Display</div>\n<div class=\"head\">Text</div>\n<div class=\"head\">Marquee Speed</div>\n<div class=\"head\">Duration (ms)</div>\n<div class=\"head\">Fade In</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Fade Out</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Action</div>\n</div>");
+	server.sendContent("<div class=\"table\">\n<div class=\"headline\">\n<div class=\"head\">ID</div>\n<div class=\"head\">Active</div>\n<div class=\"head\">Display</div>\n<div class=\"head\">Text</div>\n<div class=\"head\">Marquee/Scroll<br>Speed</div>\n<div class=\"head\">Duration (ms)</div>\n<div class=\"head\">Fade In</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Fade Out</div>\n<div class=\"head\">Speed</div>\n<div class=\"head\">Action</div>\n</div>");
 	uint8_t i = 0;
 	while (dc != NULL) {
 		server.sendContent("<form method=\"post\">\n<div class=\"cell\">\n");
@@ -399,6 +425,8 @@ void showIndex() {
 		server.sendContent(String("<option value=\"0\"") + (dc->display == SMALLTEXT ? " selected" : "") + ">Small text (2 lines)</option>\n");
 		server.sendContent(String("<option value=\"1\"") + (dc->display == BIGTEXT ? " selected" : "") + ">Big text (single line)</option>\n");
 		server.sendContent(String("<option value=\"2\"") + (dc->display == MARQUEE ? " selected" : "") + ">Marquee (single line)</option>\n");
+		server.sendContent(String("<option value=\"3\"") + (dc->display == SMALLTEXT_BLINK ? " selected" : "") + ">Small text (blinking)</option>\n");
+		server.sendContent(String("<option value=\"4\"") + (dc->display == BIGTEXT_BLINK ? " selected" : "") + ">Big text (blinking)</option>\n");
 		server.sendContent(String("</select>\n</div>\n<div class=\"desc\">\nText\n</div>\n<div class=\"cell\">\n<input style=\"font-family:monospace\" name=\"text\" type=\"text\" style=\"width: 100%;\" value=\"") + (dc->text == NULL ? "" : dc->text) + "\" />\n</div>\n");
 		server.sendContent(String("<div class=\"desc\">\nMarquee speed\n</div>\n<div class=\"cell\">\n<input type=\"number\" min=\"1\" name=\"speed\" value=\"") + dc->speed + "\" />\n</div>\n");
 		server.sendContent(String("<div class=\"desc\">\nDisplay duration\n</div>\n<div class=\"cell\">\n<input type=\"number\" min=\"0\" name=\"duration\" value=\"") + dc->duration + "\" />\n</div>\n");
@@ -422,14 +450,14 @@ void showIndex() {
 		if (dc->next == NULL) break;
 		dc = dc->next;
 	}
-	server.sendContent("</div>\n</body>\n</html>");
+	server.sendContent("</div>\nSpeeds are configured as n milliseconds per step (e.g. speed = 10, brightness = 20, mode = dim: 10ms &times; 20 brightness-steps = 200ms animation time)\n</body>\n</html>");
 }
 
 bool animate() {
 	bool end = animationEnd;
 	FadeType f = end ? currentNode->fadeOut : currentNode->fadeIn;
 	int16_t frame = (millis() - (end ? animationEnd : animationStart)) / (end ? currentNode->fadeOutSpeed : currentNode->fadeInSpeed);
-	if (currentNode->display == BIGTEXT) {
+	if (currentNode->display == BIGTEXT || currentNode->display == BIGTEXT_BLINK) {
 		led.setTextSize(2);
 	} else {
 		led.setTextSize(1);
@@ -440,7 +468,7 @@ bool animate() {
 	if (f == FADE_SLIDE_LEFT || f == FADE_SLIDE_RIGHT || f == FADE_SLIDE_UP || f == FADE_SLIDE_DOWN) {
 		led.setTextWrap(false);
 		int16_t x = 0;
-		int16_t y = currentNode->display == BIGTEXT;
+		int16_t y = 0;
 		switch (f) {
 			case FADE_SLIDE_LEFT:
 				x = end ? -frame : (-led.width() + frame);
@@ -458,10 +486,9 @@ bool animate() {
 				break;
 		}
 		led.setCursor(x, y);
-		if (currentNode->display == BIGTEXT) {
+		if (currentNode->display == BIGTEXT || currentNode->display == BIGTEXT_BLINK) {
 			led.print(text.substring(0, led.width() - 1 / 12));
-		}
-		if (currentNode->display == SMALLTEXT) {
+		} else {
 			led.print(text.substring(0, led.width() / 6));
 			led.setCursor(x, y + 8);
 			led.print(text.substring(led.width() / 6, (led.width() / 6) * 2));
@@ -474,7 +501,7 @@ bool animate() {
 		return frame >= led.height();
 	}
 	led.setTextWrap(true);
-	led.setCursor(0, currentNode->display == BIGTEXT);
+	led.setCursor(0, 0);
 	led.print(text);
 	switch (f) {
 		case FADE_DIM:
@@ -516,6 +543,9 @@ bool animate() {
 
 void loop() {
 	server.handleClient();
+#ifdef ENABLE_OTA
+	ArduinoOTA.handle();
+#endif //ENABLE_OTA
 	if (currentNode != NULL && currentNode->text != NULL) {
 		if (animationStart != 0 && displayStart == 0) {
 			bool next = (currentNode->fadeIn == FADE_APPEAR) | (currentNode->display == MARQUEE);
@@ -542,20 +572,21 @@ void loop() {
 					fout = true;
 				}
 				led.fillScreen(0);
-				led.setCursor(x, 1);
+				led.setCursor(x, 0);
 				led.print(text);
 				led.display();
 			} else {
 				led.setTextWrap(true);
-				if (currentNode->display == BIGTEXT) {
+				if (currentNode->display == BIGTEXT || currentNode->display == BIGTEXT_BLINK) {
 					led.setTextSize(2);
-					led.setCursor(0, 1);
 				} else {
 					led.setTextSize(1);
-					led.setCursor(0, 0);
 				}
+				led.setCursor(0, 0);
 				led.fillScreen(0);
-				led.print(text);
+				if (!(currentNode->display == BIGTEXT_BLINK || currentNode->display == SMALLTEXT_BLINK) || ((millis() - displayStart) / currentNode->speed) & 1) {
+					led.print(text);
+				}
 				led.display();
 				if (displayStart + currentNode->duration < millis() && cycleOn) {
 					fout = true;
