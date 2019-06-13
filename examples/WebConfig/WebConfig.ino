@@ -366,6 +366,10 @@ void getText(String& text) {
 
 void showIndex() {
 	Serial.println("HTTP Request");
+	if (!server.authenticate(AUTH_USER, AUTH_PASS)) {
+		Serial.println("Not authenticated");
+		return server.requestAuthentication();
+    }
 	if (server.method() == HTTP_POST) {
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
