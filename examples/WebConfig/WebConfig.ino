@@ -317,6 +317,19 @@ DisplayContent* getNode(uint8_t index) {
 	return dc;
 }
 
+int8_t getNodeId(DisplayContent* dc) {
+	if (dc == NULL || firstNode == NULL) return -1;
+	uint8_t i = 0;
+	DisplayContent* node = firstNode;
+	while (dc != node) {
+		i++;
+		node = dc->next;
+		if (node == NULL) return -1;
+	}
+	return i;
+	
+}
+
 bool deleteNode(uint8_t index) {
 	DisplayContent* dc = getNode(index);
 	return deleteNode(dc);
@@ -380,13 +393,20 @@ void showIndex() {
     }
 #endif //USE_AUTH
 	if (server.method() == HTTP_POST) {
+		String api = "{";
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));
 			saveBrightness();
+			if (!api.equals("{")) api += ",";
+			api += "\"brightness\":";
+			api += maxBrightness;
 		}
 		if (server.hasArg("setCycle")) {
 			cycleOn = server.hasArg("cycle");
 			saveCycle();
+			if (!api.equals("{")) api += ",";
+			api += "\"cycle\":";
+			api += cycleOn ? '1' : '0';
 		}
 		if (server.hasArg("add") | server.hasArg("edit")) {
 			if (
@@ -409,7 +429,7 @@ void showIndex() {
 				Serial.println("edit");
 				node = getNode(atoi(server.arg("id").c_str()));
 				if (node == NULL) {
-					server.send(400, "text/plain", "ID does not exist.");
+					server.send(410, "text/plain", "ID does not exist.");
 					return;
 				}
 			}
@@ -427,21 +447,36 @@ void showIndex() {
 			
 			if (server.hasArg("add")) {
 				insertNodeBeforeLast(node);
+				if (!api.equals("{")) api += ",";
+				api += "\"added\":";
+				api += getNodeId(node);
 			}
 			saveConfig();
 		}
 		if (server.hasArg("delete")) {
-			if (!deleteNode(atoi(server.arg("id").c_str()))) {
-				server.send(400, "text/plain", "ID does not exist.");
+			uint8_t id = atoi(server.arg("id").c_str());
+			if (!deleteNode(id)) {
+				server.send(410, "text/plain", "ID does not exist.");
 			}
+			if (!api.equals("{")) api += ",";
+			api += "\"deleted\":";
+			api += id;
 			saveConfig();
 		}
 		if (server.hasArg("show")) {
-			currentNode = getNode(atoi(server.arg("id").c_str()));
+			uint8_t id = atoi(server.arg("id").c_str());
+			currentNode = getNode(id);
 			animationStart = millis();
 			displayStart = 0;
 			animationEnd = 0;
 			Serial.println("show");
+			if (!api.equals("{")) api += ",";
+			api += "\"show\":";
+			api += id;
+		}
+		if (server.hasArg("api")) {
+			server.send(200, "application/json", api);
+			return;
 		}
 	}
 
