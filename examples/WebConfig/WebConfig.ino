@@ -9,7 +9,14 @@
 
 AESYS9929B led(DWIDTH, DAT_L, CLK_H, DAT_L, CLK_L, LATCH, OE);
 
-#ifndef USE_WIFI_MANAGER
+#ifndef min
+	#define min(a,b) (((a)<(b))?(a):(b))
+#endif //min
+#ifndef max
+	#define max(a,b) (((a)>(b))?(a):(b))
+#endif //max
+
+#ifdef USE_WIFI_MANAGER
 	#include <WiFiManager.h>      //https://github.com/tzapu/WiFiManager
 #endif //USE_WIFI_MANAGER
 #ifdef ENABLE_OTA
@@ -366,10 +373,12 @@ void getText(String& text) {
 
 void showIndex() {
 	Serial.println("HTTP Request");
+#ifdef USE_AUTH
 	if (!server.authenticate(AUTH_USER, AUTH_PASS)) {
 		Serial.println("Not authenticated");
 		return server.requestAuthentication();
     }
+#endif //USE_AUTH
 	if (server.method() == HTTP_POST) {
 		if (server.hasArg("brightness")) {
 			maxBrightness = min(255, max(10, atoi(server.arg("brightness").c_str())));

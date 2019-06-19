@@ -12,8 +12,8 @@
 		const IPAddress STA_SUB(255, 255, 255, 0);
 	#endif
 #else //For WiFi Manager or AP Only mode
-	const IPAddress AP_IP(10,0,0,1);
-	const IPAddress AP_SUB(255,255,255,0);
+	IPAddress AP_IP(10,0,0,1);
+	IPAddress AP_SUB(255,255,255,0);
 	const char* AP_PASS = NULL; // Set to NULL if no password needed, otherwise set to minimum 8 chars
 #endif //!defined(USE_WIFI_MANAGER) && !defined(ONLY_AP_MODE)
 
@@ -29,8 +29,8 @@
 const char* MDNS_NAME = "AESYSdisplay";
 
 #ifdef USE_AUTH
-const char* AUTH_USER = "display";
-const char* AUTH_PASS = "password";
+	const char* AUTH_USER = "display";
+	const char* AUTH_PASS = "password";
 #endif //USE_AUTH
 
 const uint8_t  OE     =  16; //D0
